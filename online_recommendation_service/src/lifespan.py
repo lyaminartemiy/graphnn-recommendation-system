@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import redis.asyncio as redis
+import boto3
+from botocore.client import Config
 import yaml
 from fastapi import FastAPI, Request
 from src.modules.graph_nn.model import GNNRecommender
@@ -26,9 +28,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
     # Инициализация асинхронного клиента Redis
     redis_url = app.state.service_config.infrastructure.redis_url
     redis_client = redis.from_url(url=redis_url, decode_responses=True)
-
-    # Сохраняем в state
     app.state.redis_client = redis_client
+
+    # Инициализация клиента S3
+    app.state.s3_client = boto3.client(
+        "s3",
+        endpoint_url=app.state.service_config.infrastructure.s3_endpoint_url,
+        aws_access_key_id="minio",
+        aws_secret_access_key="minio123",
+        config=Config(signature_version="s3v4"),
+    )
 
     # Проверка подключения к БД
     try:
@@ -61,12 +70,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
     await redis_client.close()
 
 
-async def get_redis(request: Request) -> redis.Redis:
+async def get_redis_client(request: Request) -> redis.Redis:
     """
     Зависимость для получения Redis клиента
     """
 
     return request.app.state.redis_client
+
+
+async def get_s3_client(request: Request) -> redis.Redis:
+    """
+    Зависимость для получения клиента S3
+    """
+
+    return request.app.state.s3_client
 
 
 async def get_graph_nn_recommender(request: Request) -> GNNRecommender:

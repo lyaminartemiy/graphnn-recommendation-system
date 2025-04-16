@@ -16,6 +16,7 @@ class InfrastructureConfig(BaseModel):
     redis_url: str
     mlflow_uri: str
     model_run_id: str
+    s3_endpoint_url: str
 
 
 class RecommendationServiceConfig(BaseModel):
