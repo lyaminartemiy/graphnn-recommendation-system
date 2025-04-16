@@ -1,0 +1,4 @@
+infrastructure:
+  redis_url: "redis://:redis123@redis:6379/0"
+  mlflow_uri: "http://mlflow:5000"
+  model_run_id: "43d2dbcfc2e2476aa6d996dcf276ec4c"

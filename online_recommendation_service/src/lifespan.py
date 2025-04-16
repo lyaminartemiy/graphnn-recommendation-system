@@ -4,7 +4,11 @@ from typing import AsyncIterator
 import redis.asyncio as redis
 import yaml
 from fastapi import FastAPI, Request
+from src.modules.graph_nn.model import GNNRecommender
 from src.schemas.schemas import RecommendationServiceConfig
+from src.utils.mlflow import load_mlflow_model
+
+import mlflow
 
 
 @asynccontextmanager
@@ -20,9 +24,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
     app.state.service_config = RecommendationServiceConfig.model_validate(config_data)
 
     # Инициализация асинхронного клиента Redis
-    redis_client = redis.from_url(
-        "redis://:redis123@redis:6379/0", decode_responses=True  # Укажите ваш URL
-    )
+    redis_url = app.state.service_config.infrastructure.redis_url
+    redis_client = redis.from_url(url=redis_url, decode_responses=True)
 
     # Сохраняем в state
     app.state.redis_client = redis_client
@@ -35,13 +38,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
         print(f"Ошибка подключения к Redis: {e}")
         raise
 
+    # Загрузка модели из MLflow
+    try:
+        mlflow.set_tracking_uri(app.state.service_config.infrastructure.mlflow_uri)
+        model_artifacts = load_mlflow_model(
+            run_id=app.state.service_config.infrastructure.model_run_id
+        )
+        app.state.graph_nn_recommender = GNNRecommender(
+            model=model_artifacts.get("model"),
+            item_encoder=model_artifacts.get("item_encoder"),
+            user_encoder=None,
+            device="cpu",
+            max_seq_length=50,
+        )
+    except Exception as e:
+        print(f"Ошибка загрузки модели: {e}")
+        raise
+
     yield
 
     # Закрытие соединения
     await redis_client.close()
-    print("Подключение к Redis закрыто")
 
 
 async def get_redis(request: Request) -> redis.Redis:
-    """Зависимость для получения Redis клиента"""
+    """
+    Зависимость для получения Redis клиента
+    """
+
     return request.app.state.redis_client
+
+
+async def get_graph_nn_recommender(request: Request) -> GNNRecommender:
+    """
+    Зависимость для получения модели
+    """
+
+    return request.app.state.graph_nn_recommender
