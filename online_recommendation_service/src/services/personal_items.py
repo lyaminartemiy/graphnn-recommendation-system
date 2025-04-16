@@ -18,16 +18,26 @@ async def get_recommendations(
         print(user_data)
 
         if not user_data:
-            return []
+            return {
+                "recommendations": []
+            }
 
-        recommendations = get_recommendations_from_graph_nn()
+        recommendations = get_recommendations_from_graph_nn(
+            model=model,
+            input_data=user_data,
+            count=10,
+            return_scores=True,
+        )
+        print("recommendations:", recommendations)
 
-        return {
+        response =  {
             "recommendations": [
-                {"item_id": item_id, "score": score}
+                {"item_id": str(item_id), "score": float(score)}
                 for item_id, score in recommendations
             ]
         }
+        print("response:", response)
+        return response
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Recommendation error: {str(e)}")

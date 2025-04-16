@@ -10,7 +10,7 @@ from src.services.personal_items import get_recommendations
 router = APIRouter(prefix="/recommendations")
 
 
-@router.get("/personal_items", response_model=RecommendationResponse)
+@router.get("/personal_items/", response_model=RecommendationResponse)
 async def get_personal_recommendations(
     user_id: str,
     redis_client: redis.Redis = Depends(get_redis),

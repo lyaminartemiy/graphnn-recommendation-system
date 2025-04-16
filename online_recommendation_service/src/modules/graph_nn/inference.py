@@ -1,7 +1,7 @@
 from src.modules.graph_nn.model import GNNRecommender
 
 
-async def get_recommendations_from_graph_nn(
+def get_recommendations_from_graph_nn(
     model: GNNRecommender,
     input_data: dict,
     count: int,
