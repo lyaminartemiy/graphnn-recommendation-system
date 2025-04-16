@@ -28,40 +28,38 @@ app.layout = dbc.Container([
         dbc.Col([
             dbc.Input(id='user-id-input', placeholder="Введите ID пользователя", type="text"),
             html.Br(),
-            dbc.Button("Получить историю просмотров", id='history-button', color="primary", className="me-2"),
-            dbc.Button("Сформировать рекомендации", id='recommend-button', color="success"),
+            dbc.Button("Загрузить данные", id='load-button', color="primary"),
         ], width=12)
     ]),
     
     html.Hr(),
     
-    # Табы для истории и рекомендаций
-    dbc.Tabs([
-        dbc.Tab([
-            html.Div(id='history-container'),
-            html.Div(id='history-images', style={
-                'display': 'flex',
-                'overflowX': 'auto',
-                'gap': '16px',
-                'padding': '10px 0',
-                'marginBottom': '20px'
-            })
-        ], label="История просмотров"),
-        
-        dbc.Tab([
-            html.Div(id='recommendations-container'),
-            html.Div(id='recommendations-images', style={
-                'display': 'flex',
-                'overflowX': 'auto',
-                'gap': '16px',
-                'padding': '10px 0',
-                'marginBottom': '20px'
-            })
-        ], label="Рекомендации")
-    ]),
+    # Секция истории просмотров
+    html.H3("История просмотров"),
+    html.Div(id='history-container'),
+    html.Div(id='history-images', style={
+        'display': 'flex',
+        'overflowX': 'auto',
+        'gap': '16px',
+        'padding': '10px 0',
+        'marginBottom': '40px'
+    }),
     
-    # Скрытый элемент для хранения данных
-    dcc.Store(id='image-store', data={'history': [], 'recommendations': []})
+    # Секция рекомендаций
+    html.H3("Рекомендации для вас"),
+    html.Div(id='recommendations-container'),
+    html.Div(id='recommendations-images', style={
+        'display': 'flex',
+        'overflowX': 'auto',
+        'gap': '16px',
+        'padding': '10px 0',
+        'marginBottom': '20px'
+    }),
+    
+    # Скрытые элементы для хранения данных
+    dcc.Store(id='history-store', data=[]),
+    dcc.Store(id='recommendations-store', data=[]),
+    dcc.Store(id='user-history-store', data=[])
 ], fluid=True)
 
 # Функция для создания карточки с изображением
@@ -89,110 +87,116 @@ def create_image_card(img_data, index, width=200):
         print(f"Ошибка загрузки изображения {index}: {e}")
         return None
 
-# Обработчик для получения истории просмотров
+# Основной обработчик для загрузки данных
 @callback(
     [Output('history-images', 'children'),
-     Output('image-store', 'data', allow_duplicate=True)],
-    Input('history-button', 'n_clicks'),
-    [State('user-id-input', 'value'),
-     State('image-store', 'data')],
+     Output('recommendations-images', 'children'),
+     Output('history-store', 'data'),
+     Output('recommendations-store', 'data'),
+     Output('user-history-store', 'data')],
+    Input('load-button', 'n_clicks'),
+    State('user-id-input', 'value'),
     prevent_initial_call=True
 )
-def get_user_history(n_clicks, user_id, store_data):
+def load_user_data(n_clicks, user_id):
     if not user_id:
-        return [dbc.Alert("Пожалуйста, введите ID пользователя", color="warning")], dash.no_update
+        return (
+            [dbc.Alert("Пожалуйста, введите ID пользователя", color="warning")],
+            [],
+            [],
+            [],
+            []
+        )
     
     try:
         # Получаем историю из Redis
         data = r.get(f"user:{user_id}")
         if not data:
-            return [dbc.Alert("История пользователя не найдена", color="warning")], dash.no_update
+            return (
+                [dbc.Alert("История пользователя не найдена", color="warning")],
+                [],
+                [],
+                [],
+                []
+            )
         
         history = json.loads(data)
         article_ids = ["0" + str(article_id) for article_id in history[-10:]]
         
-        # Получаем URL изображений
+        # Получаем изображения для истории
         response = requests.get(
             "http://localhost:8000/recommendations/product_images/",
             params={"article_ids": article_ids}
         )
         
         if response.status_code != 200:
-            return [dbc.Alert("Ошибка при получении изображений", color="danger")], dash.no_update
+            history_images = [dbc.Alert("Ошибка при получении изображений", color="danger")]
+        else:
+            images_data = response.json()
+            history_urls = [url for url in images_data.values() if url]
+            history_images = []
+            for i, img_data in enumerate(history_urls, 1):
+                card = create_image_card(img_data, i)
+                if card:
+                    history_images.append(card)
         
-        images_data = response.json()
-        image_urls = [url for url in images_data.values() if url]
-        
-        # Создаем карточки с изображениями
-        cards = []
-        for i, img_data in enumerate(image_urls, 1):
-            card = create_image_card(img_data, i)
-            if card:
-                cards.append(card)
-        
-        # Обновляем хранилище
-        store_data['history'] = image_urls
-        return [cards, store_data]
-    
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        return [dbc.Alert(f"Ошибка: {str(e)}", color="danger")], dash.no_update
-
-# Обработчик для получения рекомендаций
-@callback(
-    [Output('recommendations-images', 'children'),
-     Output('image-store', 'data')],
-    Input('recommend-button', 'n_clicks'),
-    [State('user-id-input', 'value'),
-     State('image-store', 'data')],
-    prevent_initial_call=True
-)
-def get_recommendations(n_clicks, user_id, store_data):
-    if not user_id:
-        return [dbc.Alert("Пожалуйста, введите ID пользователя", color="warning")], dash.no_update
-    
-    try:
-        # Получаем рекомендации
+        # Получаем рекомендации, исключая уже просмотренные товары
         response = requests.get(
             "http://localhost:8000/recommendations/personal_items/",
             params={"user_id": user_id}
         )
         
         if response.status_code != 200:
-            return [dbc.Alert("Ошибка при получении рекомендаций", color="danger")], dash.no_update
+            recommendations_images = [dbc.Alert("Ошибка при получении рекомендаций", color="danger")]
+            recommendation_urls = []
+        else:
+            recommendations = response.json()
+            recommendations = recommendations.get("recommendations", [])
+            
+            # Фильтруем рекомендации, исключая уже просмотренные товары
+            viewed_items = set(history)
+            filtered_recommendations = [
+                rec for rec in recommendations 
+                if str(rec["item_id"]) not in viewed_items
+            ][:10]  # Берем первые 10 уникальных рекомендаций
+            
+            article_ids = ["0" + str(pair["item_id"]) for pair in filtered_recommendations]
+            
+            # Получаем изображения для рекомендаций
+            response = requests.get(
+                "http://localhost:8000/recommendations/product_images/",
+                params={"article_ids": article_ids}
+            )
+            
+            if response.status_code != 200:
+                recommendations_images = [dbc.Alert("Ошибка при получении изображений", color="danger")]
+                recommendation_urls = []
+            else:
+                images_data = response.json()
+                recommendation_urls = [url for url in images_data.values() if url]
+                recommendations_images = []
+                for i, img_data in enumerate(recommendation_urls, 1):
+                    card = create_image_card(img_data, i)
+                    if card:
+                        recommendations_images.append(card)
         
-        recommendations = response.json()
-        recommendations = recommendations.get("recommendations")
-        article_ids = ["0" + str(pair["item_id"]) for pair in recommendations[-10:]]
-        print(article_ids)
-        
-        # Получаем URL изображений
-        response = requests.get(
-            "http://localhost:8000/recommendations/product_images/",
-            params={"article_ids": article_ids}
+        return (
+            history_images,
+            recommendations_images,
+            history_urls if 'history_urls' in locals() else [],
+            recommendation_urls if 'recommendation_urls' in locals() else [],
+            history
         )
-        
-        if response.status_code != 200:
-            return [dbc.Alert("Ошибка при получении изображений", color="danger")], dash.no_update
-        
-        images_data = response.json()
-        image_urls = [url for url in images_data.values() if url]
-        
-        # Создаем карточки с изображениями
-        cards = []
-        for i, img_data in enumerate(image_urls, 1):
-            card = create_image_card(img_data, i)
-            if card:
-                cards.append(card)
-        
-        # Обновляем хранилище
-        store_data['recommendations'] = image_urls
-        return [cards, store_data]
     
     except Exception as e:
         print(f"Ошибка: {e}")
-        return [dbc.Alert(f"Ошибка: {str(e)}", color="danger")], dash.no_update
-
+        return (
+            [dbc.Alert(f"Ошибка: {str(e)}", color="danger")],
+            [],
+            [],
+            [],
+            []
+        )
 
 if __name__ == '__main__':
     app.run(debug=True, port=8050)
