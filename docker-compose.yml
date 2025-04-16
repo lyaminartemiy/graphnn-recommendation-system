@@ -41,23 +41,31 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Web UI
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
+    build:
+      context: ./mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres/mlflow
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=s3://mlflow/
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
     volumes:
       - ./mlruns:/mlruns
-    environment:
-      - MLFLOW_BACKEND_STORE_URI=sqlite:////mlruns/mlflow.db
-      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlruns
     command: mlflow server --host 0.0.0.0 --port 5000
 
   recommendation-service:
     build:
-      context: ./online-recommendation-service
+      context: ./online_recommendation_service
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -65,13 +73,18 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=redis123
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
     depends_on:
       redis:
         condition: service_healthy
       mlflow:
         condition: service_started
+      minio:
+        condition: service_started
     volumes:
-      - ./online-recommendation-service:/app
+      - ./online_recommendation_service:/app
       - ./data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

@@ -1,2 +1,0 @@
-infrastructure:
-  redis_url: "redis://:redis123@localhost:6379/0"
