@@ -14,7 +14,7 @@ config.read("../config.ini")
 
 # Конфигурация API
 API_CONFIG = {
-    "base_url": config.get("API", "base_url", fallback="http://localhost:8000"),
+    "base_url": config.get("API", "base_url", fallback="http://recommendation-service:8000"),
     "product_images_endpoint": config.get(
         "API", "product_images_endpoint", fallback="/recommendations/product_images/"
     ),
@@ -60,7 +60,7 @@ def get_user_history(user_id):
         return None
 
     data = response.json()
-    return [int(event) for event in data.get("events", [])]
+    return [str(event) for event in data.get("events", [])]
 
 
 def get_product_images(article_ids):

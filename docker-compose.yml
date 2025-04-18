@@ -16,18 +16,36 @@ services:
       timeout: 5s
       retries: 5
 
-  postgres:
+  # PostgreSQL для MLflow (метаданные)
+  postgres-mlflow:
     image: postgres:13
     environment:
       POSTGRES_USER: mlflow
       POSTGRES_PASSWORD: mlflow
       POSTGRES_DB: mlflow
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_mlflow_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5435:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL для данных приложения
+  postgres-data:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: appdata
+      POSTGRES_PASSWORD: appdata123
+      POSTGRES_DB: appdata
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+    ports:
+      - "5436:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appdata -d appdata"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -64,12 +82,12 @@ services:
     build:
       context: ./mlflow
     depends_on:
-      postgres:
+      postgres-mlflow:
         condition: service_healthy
     ports:
       - "5000:5000"
     environment:
-      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres/mlflow
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow
       - MLFLOW_DEFAULT_ARTIFACT_ROOT=s3://mlflow/
       - AWS_ACCESS_KEY_ID=minio
       - AWS_SECRET_ACCESS_KEY=minio123
@@ -92,6 +110,11 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
       - AWS_ACCESS_KEY_ID=minio
       - AWS_SECRET_ACCESS_KEY=minio123
+      - POSTGRES_HOST=postgres-data
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=appdata
+      - POSTGRES_PASSWORD=appdata123
+      - POSTGRES_DB=appdata
     depends_on:
       redis:
         condition: service_healthy
@@ -99,6 +122,8 @@ services:
         condition: service_started
       minio:
         condition: service_started
+      postgres-data:
+        condition: service_healthy
     volumes:
       - ./online_recommendation_service:/app
       - ./data:/data
@@ -115,11 +140,15 @@ services:
     ports:
       - "8050:8050"
     environment:
-      - APP_CONFIG_DEBUG=False  # В продакшне debug=False
+      - APP_CONFIG_DEBUG=False
     depends_on:
-      - recommendation-service
+      recommendation-service:
+        condition: service_started
 
   airflow-webserver:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
@@ -127,17 +156,17 @@ services:
       - redis
     environment:
       - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow:5432/airflow
       - AIRFLOW__CELERY__BROKER_URL=redis://:redis123@redis:6379/0
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
       - AIRFLOW__API__AUTH_BACKEND=airflow.api.auth.backend.basic_auth
     volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow-dags/dags:/opt/airflow/dags
+      - ./airflow-dags/logs:/opt/airflow/logs
+      - ./airflow-dags/plugins:/opt/airflow/plugins
     ports:
       - "8080:8080"
     command: webserver
@@ -148,59 +177,68 @@ services:
       retries: 3
 
   airflow-scheduler:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
       - airflow-webserver
     environment:
       - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow:5432/airflow
       - AIRFLOW__CELERY__BROKER_URL=redis://:redis123@redis:6379/0
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
     volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow-dags/dags:/opt/airflow/dags
+      - ./airflow-dags/logs:/opt/airflow/logs
+      - ./airflow-dags/plugins:/opt/airflow/plugins
     command: scheduler
 
   airflow-worker:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
       - airflow-scheduler
     environment:
       - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow:5432/airflow
       - AIRFLOW__CELERY__BROKER_URL=redis://:redis123@redis:6379/0
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
     volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow-dags/dags:/opt/airflow/dags
+      - ./airflow-dags/logs:/opt/airflow/logs
+      - ./airflow-dags/plugins:/opt/airflow/plugins
     command: celery worker
 
   airflow-init:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     depends_on:
       - postgres-airflow
     environment:
       - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres-airflow:5432/airflow
       - AIRFLOW__CELERY__BROKER_URL=redis://:redis123@redis:6379/0
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
     volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow-dags/dags:/opt/airflow/dags
+      - ./airflow-dags/logs:/opt/airflow/logs
+      - ./airflow-dags/plugins:/opt/airflow/plugins
     command: >
       bash -c "
       airflow db init &&
@@ -210,6 +248,7 @@ services:
 
 volumes:
   redis_data:
-  postgres_data:
+  postgres_mlflow_data:
+  postgres_app_data:
   postgres_airflow_data:
   minio_data:
