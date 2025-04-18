@@ -12,6 +12,10 @@ class RecommendationResponse(BaseModel):
     recommendations: List[RecommendationItem]
 
 
+class EventsResponse(BaseModel):
+    events: List[str]
+
+
 class InfrastructureConfig(BaseModel):
     redis_url: str
     mlflow_uri: str
