@@ -146,6 +146,9 @@ services:
         condition: service_started
 
   airflow-webserver:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
@@ -174,6 +177,9 @@ services:
       retries: 3
 
   airflow-scheduler:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
@@ -193,6 +199,9 @@ services:
     command: scheduler
 
   airflow-worker:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     restart: always
     depends_on:
@@ -212,6 +221,9 @@ services:
     command: celery worker
 
   airflow-init:
+    build:
+      context: ./airflow-dags
+      dockerfile: Dockerfile
     image: apache/airflow:2.5.1
     depends_on:
       - postgres-airflow
