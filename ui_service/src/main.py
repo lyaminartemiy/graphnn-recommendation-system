@@ -6,7 +6,7 @@ from io import BytesIO
 import base64
 from PIL import Image
 import configparser
-
+import json
 
 # Загрузка конфигурации
 config = configparser.ConfigParser()
@@ -41,11 +41,9 @@ APP_CONFIG = {
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.title = APP_CONFIG["title"]
 
-
 def get_full_api_url(endpoint_key):
     """Возвращает полный URL для API endpoint"""
     return f"{API_CONFIG['base_url']}{API_CONFIG[endpoint_key]}"
-
 
 def get_user_history(user_id):
     """Получает историю событий пользователя через API"""
@@ -62,7 +60,6 @@ def get_user_history(user_id):
     data = response.json()
     return [str(event) for event in data.get("events", [])]
 
-
 def get_product_images(article_ids):
     """Получает изображения товаров по их ID"""
     if not article_ids:
@@ -72,7 +69,6 @@ def get_product_images(article_ids):
         get_full_api_url("product_images_endpoint"), params={"article_ids": article_ids}
     )
     return response.json() if response.status_code == 200 else {}
-
 
 def get_recommendations(user_id, exclude_items=None):
     """Получает персонализированные рекомендации для пользователя"""
@@ -88,7 +84,6 @@ def get_recommendations(user_id, exclude_items=None):
 
     recommendations = response.json().get("recommendations", [])
 
-    # Фильтрация уже просмотренных товаров
     if exclude_items:
         exclude_set = set(str(item) for item in exclude_items)
         recommendations = [
@@ -97,9 +92,8 @@ def get_recommendations(user_id, exclude_items=None):
 
     return recommendations[: APP_CONFIG["recommendations_limit"]]
 
-
-def create_image_card(img_data, index):
-    """Создает карточку с изображением товара"""
+def create_image_card(img_data, item_id, index):
+    """Создает карточку с изображением товара и кнопками лайка/дизлайка"""
     try:
         if not img_data:
             return None
@@ -107,7 +101,6 @@ def create_image_card(img_data, index):
         img_bytes = base64.b64decode(img_data.split(",")[-1])
         img = Image.open(BytesIO(img_bytes))
 
-        # Сохраняем изображение в буфер
         buf = BytesIO()
         img.save(buf, format="JPEG")
         encoded_img = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -120,26 +113,76 @@ def create_image_card(img_data, index):
                     src=f"data:image/jpeg;base64,{encoded_img}",
                     style={"width": f"{width}px"},
                 ),
-                dbc.CardBody([html.P(f"Товар {index}", className="card-text")]),
+                dbc.CardBody([
+                    html.P(f"Товар {index}", className="card-text"),
+                    dbc.ButtonGroup([
+                        dbc.Button(
+                            html.I(className="bi bi-hand-thumbs-up"),
+                            id={"type": "like-btn", "index": item_id},
+                            color="success",
+                            size="sm",
+                            className="me-1",
+                        ),
+                        dbc.Button(
+                            html.I(className="bi bi-hand-thumbs-down"),
+                            id={"type": "dislike-btn", "index": item_id},
+                            color="danger",
+                            size="sm",
+                        ),
+                    ], size="sm"),
+                ]),
             ],
-            style={"width": f"{width + 20}px", "flexShrink": "0"},
+            style={
+                "width": f"{width + 20}px",
+                "flexShrink": "0",
+                "margin": "10px"
+            },
         )
 
     except Exception as e:
         print(f"Ошибка загрузки изображения {index}: {e}")
         return None
 
+def create_history_card(img_data, index):
+    """Создает карточку для истории просмотров (без кнопок)"""
+    try:
+        if not img_data:
+            return None
 
-def create_image_cards_from_urls(urls):
-    """Создает список карточек с изображениями из URL"""
-    return [
-        card for i, url in enumerate(urls, 1) if (card := create_image_card(url, i))
-    ]
+        img_bytes = base64.b64decode(img_data.split(",")[-1])
+        img = Image.open(BytesIO(img_bytes))
 
+        buf = BytesIO()
+        img.save(buf, format="JPEG")
+        encoded_img = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        width = APP_CONFIG["image_width"]
+
+        return dbc.Card(
+            [
+                dbc.CardImg(
+                    src=f"data:image/jpeg;base64,{encoded_img}",
+                    style={"width": f"{width}px"},
+                ),
+                dbc.CardBody([
+                    html.P(f"Товар {index}", className="card-text"),
+                ]),
+            ],
+            style={
+                "width": f"{width + 20}px",
+                "flexShrink": "0",
+                "margin": "10px"
+            },
+        )
+
+    except Exception as e:
+        print(f"Ошибка загрузки изображения {index}: {e}")
+        return None
 
 # Макет приложения
 app.layout = dbc.Container(
     [
+        html.Div(id="dummy-output", style={"display": "none"}),  # Для callback
         html.H1(APP_CONFIG["title"], className="mb-4"),
         dbc.Row(
             [
@@ -194,7 +237,6 @@ app.layout = dbc.Container(
     fluid=True,
 )
 
-
 # Основной обработчик для загрузки данных
 @callback(
     [
@@ -219,7 +261,7 @@ def load_user_data(n_clicks, user_id):
         )
 
     try:
-        # Получаем историю пользователя через API
+        # Получаем историю пользователя
         history = get_user_history(user_id)
         if not history:
             return (
@@ -231,28 +273,38 @@ def load_user_data(n_clicks, user_id):
             )
 
         # Получаем изображения для истории
-        article_ids = [
-            str(article_id) for article_id in history[-APP_CONFIG["history_limit"] :]
-        ]
+        article_ids = history[-APP_CONFIG["history_limit"] :]
         images_data = get_product_images(article_ids)
-        history_urls = [url for url in images_data.values() if url]
-        history_images = create_image_cards_from_urls(history_urls)
+        history_urls = [images_data.get(str(art_id)) for art_id in article_ids]
+        history_images = [
+            card for i, (art_id, url) in enumerate(zip(article_ids, history_urls), 1) 
+            if (card := create_history_card(url, i))
+        ]
 
         # Получаем рекомендации
         recommendations = get_recommendations(user_id, exclude_items=history)
-        recommendation_ids = [str(pair["item_id"]) for pair in recommendations]
-
+        recommendation_data = [
+            {"item_id": str(pair["item_id"]), "score": pair["score"]} 
+            for pair in recommendations
+        ]
+        
         # Получаем изображения для рекомендаций
-        images_data = get_product_images(recommendation_ids)
-        recommendation_urls = [url for url in images_data.values() if url]
-        recommendations_images = create_image_cards_from_urls(recommendation_urls)
+        rec_images_data = get_product_images([rec["item_id"] for rec in recommendation_data])
+        recommendations_images = [
+            card for i, rec in enumerate(recommendation_data, 1)
+            if (card := create_image_card(
+                rec_images_data.get(rec["item_id"]),
+                rec["item_id"],
+                i
+            ))
+        ]
 
         return (
             history_images or [dbc.Alert("Нет данных для отображения", color="info")],
-            recommendations_images
-            or [dbc.Alert("Нет рекомендаций для отображения", color="info")],
+            recommendations_images or [dbc.Alert("Нет рекомендаций для отображения", color="info")],
             history_urls,
-            recommendation_urls,
+            [{"item_id": rec["item_id"], "image": rec_images_data.get(rec["item_id"])} 
+             for rec in recommendation_data],
             history,
         )
 
@@ -260,6 +312,32 @@ def load_user_data(n_clicks, user_id):
         print(f"Ошибка: {e}")
         return ([dbc.Alert(f"Ошибка: {str(e)}", color="danger")], [], [], [], [])
 
+# Обработчик для кнопок лайков/дизлайков
+@app.callback(
+    Output("dummy-output", "children"),
+    [
+        Input({"type": "like-btn", "index": dash.ALL}, "n_clicks"),
+        Input({"type": "dislike-btn", "index": dash.ALL}, "n_clicks"),
+    ],
+    prevent_initial_call=True,
+)
+def handle_feedback(like_clicks, dislike_clicks):
+    ctx = dash.callback_context
+
+    if not ctx.triggered:
+        return dash.no_update
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    button_info = json.loads(button_id)
+    button_type = button_info["type"]
+    item_id = button_info["index"]
+
+    if button_type == "like-btn":
+        print(f"Пользователь лайкнул товар {item_id}")
+    elif button_type == "dislike-btn":
+        print(f"Пользователь дизлайкнул товар {item_id}")
+
+    return dash.no_update
 
 if __name__ == "__main__":
     app.run(

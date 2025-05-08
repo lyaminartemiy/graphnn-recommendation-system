@@ -6,9 +6,8 @@ import boto3
 from botocore.client import Config
 import yaml
 from fastapi import FastAPI, Request
-from src.modules.graph_nn.model import GNNRecommender
 from src.schemas.schemas import RecommendationServiceConfig
-from src.utils.mlflow import load_mlflow_model
+from mlflow import MlflowClient
 
 import mlflow
 
@@ -47,21 +46,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
         print(f"Ошибка подключения к Redis: {e}")
         raise
 
-    # Загрузка модели из MLflow
+    # Настройка MLflow и загрузка модели
     try:
         mlflow.set_tracking_uri(app.state.service_config.infrastructure.mlflow_uri)
-        model_artifacts = load_mlflow_model(
-            run_id=app.state.service_config.infrastructure.model_run_id
-        )
-        app.state.graph_nn_recommender = GNNRecommender(
-            model=model_artifacts.get("model"),
-            item_encoder=model_artifacts.get("item_encoder"),
-            user_encoder=None,
-            device="cpu",
-            max_seq_length=50,
-        )
+        
+        client = MlflowClient()
+        latest_version = client.get_latest_versions("gnn_recommender")[0]
+        print("latest_version:", latest_version)
+        model_uri = f"models:/gnn_recommender/{latest_version.version}"
+        
+        # Загружаем модель
+        pyfunc_model = mlflow.pyfunc.load_model(model_uri)
+        app.state.graph_nn_recommender = pyfunc_model.unwrap_python_model()
+        
     except Exception as e:
-        print(f"Ошибка загрузки модели: {e}")
+        print(f"❌ Ошибка загрузки модели: {e}")
         raise
 
     yield
@@ -86,7 +85,7 @@ async def get_s3_client(request: Request) -> redis.Redis:
     return request.app.state.s3_client
 
 
-async def get_graph_nn_recommender(request: Request) -> GNNRecommender:
+async def get_graph_nn_recommender(request: Request):
     """
     Зависимость для получения модели
     """

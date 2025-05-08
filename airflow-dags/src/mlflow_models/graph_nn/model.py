@@ -1,7 +1,9 @@
-from typing import Dict, List, Optional, Union
+import mlflow.pyfunc
+import torch
+import joblib
+from typing import Dict, Any, List, Union, Optional
 
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import LabelEncoder
@@ -16,10 +18,12 @@ class TransactionGNN(nn.Module):
         hidden_dim: int = 64,
         num_layers: int = 2,
         num_heads: int = 4,
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
+        self.dropout = dropout
 
         # Эмбеддинг товаров
         self.item_embedding = nn.Embedding(num_items, hidden_dim)
@@ -28,14 +32,23 @@ class TransactionGNN(nn.Module):
         self.gat_layers = nn.ModuleList()
         for i in range(num_layers):
             in_channels = hidden_dim * num_heads if i > 0 else hidden_dim
+            out_channels = hidden_dim
             self.gat_layers.append(
-                GATConv(in_channels, hidden_dim, heads=num_heads, concat=True)
+                GATConv(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    heads=num_heads,
+                    concat=True,
+                    dropout=dropout,
+                    add_self_loops=True,
+                )
             )
 
         # Классификатор
         self.predictor = nn.Sequential(
             nn.Linear(hidden_dim * num_heads, hidden_dim),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, num_items),
         )
 
@@ -45,7 +58,9 @@ class TransactionGNN(nn.Module):
 
         # Применяем GAT-слои
         for layer in self.gat_layers:
-            x = F.relu(layer(x, data.edge_index))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = F.elu(layer(x, data.edge_index))
+            x = F.normalize(x, p=2, dim=-1)  # Нормализация
 
         # Предсказание следующего товара
         if x.size(0) == 0:
@@ -57,21 +72,20 @@ class TransactionGNN(nn.Module):
         return logits.squeeze(0)
 
     def predict_next_item(self, data, top_k=5):
-        """
-        Предсказание top-k следующих товаров
-        """
-
+        """Предсказание top-k следующих товаров"""
         with torch.no_grad():
             if data.num_nodes == 0:
                 return torch.zeros(0, top_k, dtype=torch.long), torch.zeros(0, top_k)
 
-            # Получаем логиты для всех товаров
             logits = self.forward(data)
+            
+            # Обработка случая, когда logits пустые
+            if logits.numel() == 0:
+                return torch.zeros(0, top_k, dtype=torch.long), torch.zeros(0, top_k)
 
-            # Применяем softmax и берем top-k
             probs = F.softmax(logits, dim=-1)
             top_probs, top_items = torch.topk(probs, k=min(top_k, probs.size(-1)))
-
+            
             return top_items, top_probs
 
 
@@ -196,3 +210,59 @@ class GNNRecommender:
             return list(zip(recommended_items, scores))
 
         return recommended_items.tolist()
+
+
+class GNNRecommenderWrapper(mlflow.pyfunc.PythonModel):
+    def __init__(self, model: 'GNNRecommender' = None):
+        self.model = model
+    
+    def load_context(self, context):
+        """
+        Загружает артефакты модели из контекста MLflow
+        """
+
+        item_encoder = joblib.load(context.artifacts["item_encoder"])
+        print(f"Item encoder type: {type(item_encoder)}")
+        
+        # Загрузка состояния модели
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_state = torch.load(context.artifacts["model_state"], map_location=device)
+        
+        # Создание модели
+        gnn_model = TransactionGNN(
+            num_items=len(item_encoder.classes_),
+            hidden_dim=model_state["hidden_dim"],
+            num_layers=model_state["num_layers"],
+            num_heads=model_state["num_heads"],
+            dropout=model_state.get("dropout", 0.1)
+        )
+        gnn_model.load_state_dict(model_state["state_dict"])
+        
+        # Инициализация враппера
+        self.model = GNNRecommender(
+            model=gnn_model,
+            item_encoder=item_encoder,
+            user_encoder=None,
+            device=device,
+            max_seq_length=model_state.get("max_seq_length", 50)
+        )
+    
+    def predict(self, context, model_input: Union[List[str], Dict[str, Any]], params: Dict[str, Any] = None):
+        """
+        Генерирует предсказания для входных данных
+        
+        Args:
+            model_input: Может быть:
+                - Список item_id
+                - Словарь с ключом 'items' (список item_id)
+            params: Дополнительные параметры:
+                - top_k: количество рекомендаций (по умолчанию 5)
+                - return_scores: возвращать ли оценки (по умолчанию False)
+        """
+        if params is None:
+            params = {}
+        
+        top_k = params.get("top_k", 5)
+        return_scores = params.get("return_scores", False)
+        
+        return self.model.recommend(model_input, top_k=top_k, return_scores=return_scores)

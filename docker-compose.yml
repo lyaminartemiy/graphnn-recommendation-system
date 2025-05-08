@@ -246,9 +246,43 @@ services:
       airflow connections add redis --conn-type redis --conn-host redis --conn-port 6379 --conn-password redis123
       "
 
+  rabbitmq:
+    image: rabbitmq:3.11-management
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbit
+      RABBITMQ_DEFAULT_PASS: rabbit123
+    ports:
+      - "5672:5672"  # AMQP порт
+      - "15672:15672"  # Web UI
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  event-processor:
+    build:
+      context: ./event_processor
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=rabbit
+      - RABBITMQ_PASSWORD=rabbit123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis123
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   redis_data:
   postgres_mlflow_data:
   postgres_app_data:
   postgres_airflow_data:
   minio_data:
+  rabbitmq_data:

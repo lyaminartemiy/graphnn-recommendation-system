@@ -1,6 +1,6 @@
 infrastructure:
   redis_url: "redis://:redis123@redis:6379/0"
   mlflow_uri: "http://mlflow:5000"
-  model_run_id: "a69b307154ae4f2fb88e140355420935"
+  model_run_id: "59d26bbc45f54311a6e1a0b8f97d7dac"
   s3_endpoint_url: "http://minio:9000"
   

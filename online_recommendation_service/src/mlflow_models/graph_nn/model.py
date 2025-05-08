@@ -1,7 +1,9 @@
-from typing import Dict, List, Optional, Union
+import mlflow.pyfunc
+import torch
+import joblib
+from typing import Dict, Any, List, Union, Optional
 
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import LabelEncoder
@@ -208,3 +210,59 @@ class GNNRecommender:
             return list(zip(recommended_items, scores))
 
         return recommended_items.tolist()
+
+
+class GNNRecommenderWrapper(mlflow.pyfunc.PythonModel):
+    def __init__(self, model: 'GNNRecommender' = None):
+        self.model = model
+    
+    def load_context(self, context):
+        """
+        Загружает артефакты модели из контекста MLflow
+        """
+
+        item_encoder = joblib.load(context.artifacts["item_encoder"])
+        print(f"Item encoder type: {type(item_encoder)}")
+        
+        # Загрузка состояния модели
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_state = torch.load(context.artifacts["model_state"], map_location=device)
+        
+        # Создание модели
+        gnn_model = TransactionGNN(
+            num_items=len(item_encoder.classes_),
+            hidden_dim=model_state["hidden_dim"],
+            num_layers=model_state["num_layers"],
+            num_heads=model_state["num_heads"],
+            dropout=model_state.get("dropout", 0.1)
+        )
+        gnn_model.load_state_dict(model_state["state_dict"])
+        
+        # Инициализация враппера
+        self.model = GNNRecommender(
+            model=gnn_model,
+            item_encoder=item_encoder,
+            user_encoder=None,
+            device=device,
+            max_seq_length=model_state.get("max_seq_length", 50)
+        )
+    
+    def predict(self, context, model_input: Union[List[str], Dict[str, Any]], params: Dict[str, Any] = None):
+        """
+        Генерирует предсказания для входных данных
+        
+        Args:
+            model_input: Может быть:
+                - Список item_id
+                - Словарь с ключом 'items' (список item_id)
+            params: Дополнительные параметры:
+                - top_k: количество рекомендаций (по умолчанию 5)
+                - return_scores: возвращать ли оценки (по умолчанию False)
+        """
+        if params is None:
+            params = {}
+        
+        top_k = params.get("top_k", 5)
+        return_scores = params.get("return_scores", False)
+        
+        return self.model.recommend(model_input, top_k=top_k, return_scores=return_scores)

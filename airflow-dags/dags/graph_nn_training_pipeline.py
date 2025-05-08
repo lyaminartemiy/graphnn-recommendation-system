@@ -12,6 +12,7 @@ import redis
 import json
 from typing import List, Dict
 
+
 # Константы для путей сохранения
 DATA_DIR = Path("/opt/airflow/data/tmp_graph_nn")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -56,9 +57,7 @@ def graph_nn_pipeline():
             return pickle.load(f)
 
     def load_data_to_redis(user_sequences: List[Dict], r: redis.Redis) -> None:
-        """
-        Загрузка данных в Redis
-        """
+        """Загрузка данных в Redis"""
         for user_sequence in user_sequences:
             user_id = user_sequence.get(Constants.USER_ID)
             items_ids = user_sequence.get(Constants.ITEMS_IDS)
@@ -231,10 +230,14 @@ def graph_nn_pipeline():
     @task
     def save_to_mlflow(data_dict):
         """Сохранение модели в MLflow"""
+
+        from src.mlflow_models.graph_nn.model import GNNRecommenderWrapper
+
         # Загружаем модель и датасет
         model_data = _load_obj(data_dict["model_path"])
         graph_dataset = _load_obj(model_data["dataset_path"])
         
+        # Настройка окружения MLflow
         os.environ["AWS_ACCESS_KEY_ID"] = "minio"
         os.environ["AWS_SECRET_ACCESS_KEY"] = "minio123"
         os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://minio:9000"
@@ -242,30 +245,77 @@ def graph_nn_pipeline():
         mlflow.set_tracking_uri("http://mlflow:5000")
         mlflow.set_experiment("graph-nn-model")
 
+        # Создаем временную директорию для артефактов
+        artifacts_dir = Path("artifacts")
+        artifacts_dir.mkdir(exist_ok=True)
+        
+        # Сохраняем необходимые артефакты
+        item_encoder_path = artifacts_dir / "item_encoder.pkl"
+        joblib.dump(graph_dataset.item_encoder, item_encoder_path)
+                
+        # Сохраняем состояние модели
+        model_state_path = artifacts_dir / "model_state.pt"
+        torch.save({
+            "state_dict": model_data["model"].state_dict(),
+            "hidden_dim": Constants.HIDDEN_DIM,
+            "num_layers": Constants.NUM_LAYERS,
+            "num_heads": Constants.NUM_HEADS,
+            "dropout": getattr(Constants, "DROPOUT", 0.1),
+            "max_seq_length": getattr(Constants, "MAX_SEQ_LENGTH", 50)
+        }, model_state_path)
+
         with mlflow.start_run(run_name=f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
-            # Сохраняем модель PyTorch
-            mlflow.pytorch.log_model(model_data["model"], "model")
-
-            # Сохраняем энкодер товаров
-            joblib.dump(graph_dataset.item_encoder, "item_encoder.pkl")
-            mlflow.log_artifact("item_encoder.pkl", "encoders")
-
             # Логируем параметры модели
-            mlflow.log_params(
-                {
-                    "num_items": graph_dataset.num_items,
-                    "hidden_dim": Constants.HIDDEN_DIM,
-                    "num_layers": Constants.NUM_LAYERS,
-                    "num_heads": Constants.NUM_HEADS,
-                }
+            mlflow.log_params({
+                "num_items": graph_dataset.num_items,
+                "hidden_dim": Constants.HIDDEN_DIM,
+                "num_layers": Constants.NUM_LAYERS,
+                "num_heads": Constants.NUM_HEADS,
+                "dropout": getattr(Constants, "DROPOUT", 0.1),
+                "max_seq_length": getattr(Constants, "MAX_SEQ_LENGTH", 50)
+            })
+
+            # Логируем артефакты
+            mlflow.log_artifact(item_encoder_path, "artifacts")
+            mlflow.log_artifact(model_state_path, "artifacts")
+
+            # Создаем словарь с путями к артефактам для PythonModel
+            artifacts = {
+                "item_encoder": str(item_encoder_path),
+                "model_state": str(model_state_path)
+            }
+
+            # Логируем pyfunc модель
+            model_info = mlflow.pyfunc.log_model(
+                artifact_path="gnn_recommender",
+                python_model=GNNRecommenderWrapper(),
+                artifacts=artifacts,
+                registered_model_name="gnn_recommender",
+                code_path=["/opt/airflow/src/mlflow_models"],
+                pip_requirements=[
+                    "PyYAML==6.0.2",
+                    "torch==2.3.0",
+                    "torch-geometric==2.5.3",
+                    "pandas==2.2.3",
+                    "tqdm==4.67.1",
+                    "numpy==2.0.0",
+                    "scikit-learn==1.6.1",
+                    "boto3==1.37.34",
+                    "mlflow==2.21.3",
+                    "fastparquet==2024.11.0",
+                    "pyarrow==19.0.1",
+                    "psycopg2-binary==2.9.10",
+                    "marshmallow-sqlalchemy==0.28.2",
+                ],
             )
         
         # Очистка временных файлов
-        for file in DATA_DIR.glob("*"):
+        for file in artifacts_dir.glob("*"):
             file.unlink()
+        artifacts_dir.rmdir()
         
-        return "Model saved to MLflow"
-
+        return f"Model saved to MLflow with run_id: {model_info.run_id}"
+    
     # Определяем порядок выполнения задач
     data = prepare_data()
     redis_task = load_to_redis(data)  # Загрузка в Redis
@@ -277,5 +327,5 @@ def graph_nn_pipeline():
     data >> redis_task  # Сначала загрузка данных, потом в Redis
     data >> loaders     # Параллельно с загрузкой в Redis
 
-# Создаем DAG
+
 graph_nn_pipeline_dag = graph_nn_pipeline()

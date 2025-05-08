@@ -34,4 +34,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Копируем весь проект
 COPY ./src /opt/airflow/src
 COPY ./dags /opt/airflow/dags
-ENV PYTHONPATH=/opt/airflow/src:${PYTHONPATH}
+
+# Устанавливаем PYTHONPATH
+ENV PYTHONPATH=/opt/airflow:/opt/airflow/src:${PYTHONPATH}

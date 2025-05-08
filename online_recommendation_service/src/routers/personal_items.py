@@ -3,7 +3,6 @@ from typing import Dict, List
 import redis
 from fastapi import APIRouter, Depends
 from src.lifespan import get_graph_nn_recommender, get_redis_client
-from src.modules.graph_nn.model import GNNRecommender
 from src.schemas.schemas import RecommendationResponse
 from src.services.personal_items import get_recommendations
 
@@ -14,7 +13,7 @@ router = APIRouter(prefix="/recommendations")
 async def get_personal_recommendations(
     user_id: str,
     redis_client: redis.Redis = Depends(get_redis_client),
-    model: GNNRecommender = Depends(get_graph_nn_recommender),
+    model = Depends(get_graph_nn_recommender),
 ) -> Dict[str, List[Dict[str, float]]]:
     """
     Возвращает персонализированные рекомендации для пользователя.

@@ -1,4 +1,4 @@
-FROM ghcr.io/mlflow/mlflow:latest
+FROM ghcr.io/mlflow/mlflow:v2.21.3
 
 # Устанавливаем зависимости для PostgreSQL
 RUN pip install --no-cache-dir psycopg2-binary boto3
