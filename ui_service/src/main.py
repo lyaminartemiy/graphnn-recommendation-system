@@ -1,12 +1,14 @@
 import dash
 from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
+from datetime import datetime
 import requests
 from io import BytesIO
 import base64
 from PIL import Image
 import configparser
 import json
+import pika
 
 # Загрузка конфигурации
 config = configparser.ConfigParser()
@@ -25,6 +27,55 @@ API_CONFIG = {
         "API", "user_events_endpoint", fallback="/recommendations/events/"
     ),
 }
+
+FEEDBACK_CONFIG = {
+    "rabbitmq_host": config.get("RabbitMQ", "host", fallback="rabbitmq"),
+    "rabbitmq_port": config.getint("RabbitMQ", "port", fallback=5672),
+    "rabbitmq_user": config.get("RabbitMQ", "user", fallback="rabbit"),
+    "rabbitmq_password": config.get("RabbitMQ", "password", fallback="rabbit123"),
+    "feedback_queue": config.get("RabbitMQ", "feedback_queue", fallback="user_feedback"),
+}
+
+def send_feedback_to_rabbitmq(user_id, item_id, action):
+    """Отправляет фидбек пользователя в RabbitMQ"""
+    print("ОТПРАВЛЯЕМ ЭВЕНТ:", user_id, item_id, action)
+    try:
+        credentials = pika.PlainCredentials(
+            FEEDBACK_CONFIG["rabbitmq_user"], 
+            FEEDBACK_CONFIG["rabbitmq_password"]
+        )
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(
+                host=FEEDBACK_CONFIG["rabbitmq_host"],
+                port=FEEDBACK_CONFIG["rabbitmq_port"],
+                credentials=credentials
+            )
+        )
+        channel = connection.channel()
+        channel.queue_declare(queue=FEEDBACK_CONFIG["feedback_queue"], durable=True)
+        
+        message = {
+            "user_id": str(user_id),
+            "item_id": str(item_id),
+            "action": action,  # 'like' или 'dislike'
+            "timestamp": datetime.now().isoformat(),
+        }
+        
+        channel.basic_publish(
+            exchange='',
+            routing_key=FEEDBACK_CONFIG["feedback_queue"],
+            body=json.dumps(message),
+            properties=pika.BasicProperties(
+                delivery_mode=2,  # make message persistent
+            )
+        )
+        
+        connection.close()
+        return True
+    except Exception as e:
+        print(f"Ошибка отправки фидбека: {e}")
+        return False
+
 
 # Настройки приложения
 APP_CONFIG = {
@@ -92,8 +143,8 @@ def get_recommendations(user_id, exclude_items=None):
 
     return recommendations[: APP_CONFIG["recommendations_limit"]]
 
+
 def create_image_card(img_data, item_id, index):
-    """Создает карточку с изображением товара и кнопками лайка/дизлайка"""
     try:
         if not img_data:
             return None
@@ -111,31 +162,64 @@ def create_image_card(img_data, item_id, index):
             [
                 dbc.CardImg(
                     src=f"data:image/jpeg;base64,{encoded_img}",
-                    style={"width": f"{width}px"},
+                    style={
+                        "width": f"{width}px",
+                        "height": f"{width}px",
+                        "objectFit": "cover",
+                        "borderTopLeftRadius": "12px",
+                        "borderTopRightRadius": "12px"
+                    },
                 ),
                 dbc.CardBody([
-                    html.P(f"Товар {index}", className="card-text"),
+                    html.Div(f"Модель {index}", style={
+                        "textAlign": "center",
+                        "fontSize": "0.9rem",
+                        "fontWeight": "600",
+                        "marginBottom": "0.75rem"
+                    }),
                     dbc.ButtonGroup([
                         dbc.Button(
-                            html.I(className="bi bi-hand-thumbs-up"),
+                            "❤️",
                             id={"type": "like-btn", "index": item_id},
-                            color="success",
+                            color="light",
                             size="sm",
-                            className="me-1",
+                            style={
+                                "border": "1px solid #ccc",
+                                "borderRadius": "8px",
+                                "width": "40px",
+                                "height": "40px",
+                                "padding": "0",
+                                "fontSize": "1.2rem",
+                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)"
+                            },
+                            className="me-1"
                         ),
                         dbc.Button(
-                            html.I(className="bi bi-hand-thumbs-down"),
+                            "✖️",
                             id={"type": "dislike-btn", "index": item_id},
-                            color="danger",
+                            color="light",
                             size="sm",
+                            style={
+                                "border": "1px solid #ccc",
+                                "borderRadius": "8px",
+                                "width": "40px",
+                                "height": "40px",
+                                "padding": "0",
+                                "fontSize": "1.2rem",
+                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)"
+                            },
                         ),
-                    ], size="sm"),
-                ]),
+                    ], style={"justifyContent": "center", "display": "flex"})
+                ], style={"padding": "0.75rem"})
             ],
             style={
-                "width": f"{width + 20}px",
-                "flexShrink": "0",
-                "margin": "10px"
+                "width": f"{width}px",
+                "border": "none",
+                "borderRadius": "12px",
+                "overflow": "hidden",
+                "backgroundColor": "#fff",
+                "boxShadow": "0 4px 12px rgba(0,0,0,0.08)",
+                "transition": "transform 0.2s ease-in-out"
             },
         )
 
@@ -143,8 +227,8 @@ def create_image_card(img_data, item_id, index):
         print(f"Ошибка загрузки изображения {index}: {e}")
         return None
 
+
 def create_history_card(img_data, index):
-    """Создает карточку для истории просмотров (без кнопок)"""
     try:
         if not img_data:
             return None
@@ -162,80 +246,144 @@ def create_history_card(img_data, index):
             [
                 dbc.CardImg(
                     src=f"data:image/jpeg;base64,{encoded_img}",
-                    style={"width": f"{width}px"},
+                    style={
+                        "width": f"{width}px",
+                        "height": f"{width}px",
+                        "objectFit": "cover",
+                        "borderTopLeftRadius": "12px",
+                        "borderTopRightRadius": "12px"
+                    },
                 ),
                 dbc.CardBody([
-                    html.P(f"Товар {index}", className="card-text"),
-                ]),
+                    html.Div(f"Модель {index}", style={
+                        "textAlign": "center",
+                        "fontSize": "0.9rem",
+                        "fontWeight": "600"
+                    })
+                ], style={"padding": "0.75rem"})
             ],
             style={
-                "width": f"{width + 20}px",
-                "flexShrink": "0",
-                "margin": "10px"
+                "width": f"{width}px",
+                "border": "none",
+                "borderRadius": "12px",
+                "overflow": "hidden",
+                "backgroundColor": "#fff",
+                "boxShadow": "0 4px 12px rgba(0,0,0,0.08)",
+                "transition": "transform 0.2s ease-in-out"
             },
         )
 
     except Exception as e:
         print(f"Ошибка загрузки изображения {index}: {e}")
         return None
+
 
 # Макет приложения
 app.layout = dbc.Container(
     [
-        html.Div(id="dummy-output", style={"display": "none"}),  # Для callback
-        html.H1(APP_CONFIG["title"], className="mb-4"),
+        # Шапка сайта
+        html.Div(
+            [
+                html.H2(APP_CONFIG["title"], style={
+                    "margin": "0",
+                    "fontWeight": "700",
+                    "fontSize": "2rem",
+                    "letterSpacing": "0.5px",
+                    "color": "#222"
+                }),
+            ],
+            style={
+                "backgroundColor": "#f8f8f8",
+                "padding": "20px",
+                "borderRadius": "12px",
+                "marginBottom": "30px",
+                "boxShadow": "0 2px 6px rgba(0,0,0,0.08)",
+                "textAlign": "center"
+            }
+        ),
+
         dbc.Row(
             [
                 dbc.Col(
                     [
                         dbc.Input(
                             id="user-id-input",
-                            placeholder="Введите ID пользователя",
+                            placeholder="Введите ваш ID для персональных рекомендаций",
                             type="text",
+                            debounce=True,
+                            style={
+                                "borderRadius": "8px",
+                                "border": "1px solid #ccc",
+                                "padding": "12px"
+                            }
                         ),
                         html.Br(),
                         dbc.Button(
-                            "Загрузить данные", id="load-button", color="primary"
+                            "Показать рекомендации",
+                            id="load-button",
+                            color="secondary",
+                            className="w-100",
+                            size="lg",
+                            style={
+                                "borderRadius": "8px",
+                                "fontWeight": "600",
+                                "padding": "12px",
+                                "backgroundColor": "#333",
+                                "border": "none"
+                            }
                         ),
                     ],
-                    width=12,
+                    width=5, className="mx-auto"
                 )
-            ]
+            ],
+            className="mb-5"
         ),
+
         html.Hr(),
-        # Секция истории просмотров
-        html.H3("История просмотров"),
-        html.Div(id="history-container"),
+
+        html.H4("Вы смотрели ранее", className="mt-5 mb-3", style={
+            "fontWeight": "600",
+            "letterSpacing": "0.3px"
+        }),
         html.Div(
             id="history-images",
             style={
                 "display": "flex",
                 "overflowX": "auto",
-                "gap": "16px",
-                "padding": "10px 0",
-                "marginBottom": "40px",
+                "gap": "20px",
+                "padding": "8px 0 30px 0",
+                "scrollBehavior": "smooth",
+                "WebkitOverflowScrolling": "touch",
+                "paddingBottom": "16px"
             },
         ),
-        # Секция рекомендаций
-        html.H3("Рекомендации для вас"),
-        html.Div(id="recommendations-container"),
+
+        html.H4("Рекомендуем вам", className="mt-5 mb-3", style={
+            "fontWeight": "600",
+            "letterSpacing": "0.3px"
+        }),
         html.Div(
             id="recommendations-images",
             style={
                 "display": "flex",
                 "overflowX": "auto",
-                "gap": "16px",
-                "padding": "10px 0",
-                "marginBottom": "20px",
+                "gap": "20px",
+                "padding": "8px 0 30px 0",
+                "scrollBehavior": "smooth",
+                "WebkitOverflowScrolling": "touch",
+                "paddingBottom": "16px"
             },
         ),
-        # Скрытые элементы для хранения данных
+
+        html.Div(id="dummy-output", style={"display": "none"}),
+
         dcc.Store(id="history-store", data=[]),
         dcc.Store(id="recommendations-store", data=[]),
         dcc.Store(id="user-history-store", data=[]),
     ],
     fluid=True,
 )
+
 
 # Основной обработчик для загрузки данных
 @callback(
@@ -312,32 +460,53 @@ def load_user_data(n_clicks, user_id):
         print(f"Ошибка: {e}")
         return ([dbc.Alert(f"Ошибка: {str(e)}", color="danger")], [], [], [], [])
 
-# Обработчик для кнопок лайков/дизлайков
+
 @app.callback(
     Output("dummy-output", "children"),
     [
         Input({"type": "like-btn", "index": dash.ALL}, "n_clicks"),
         Input({"type": "dislike-btn", "index": dash.ALL}, "n_clicks"),
     ],
+    [State("user-id-input", "value")],
     prevent_initial_call=True,
 )
-def handle_feedback(like_clicks, dislike_clicks):
+def handle_feedback(like_clicks, dislike_clicks, user_id):
     ctx = dash.callback_context
 
-    if not ctx.triggered:
+    # Если ничего не было нажато или ID пользователя пустое
+    if not ctx.triggered or not user_id:
         return dash.no_update
 
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    button_info = json.loads(button_id)
-    button_type = button_info["type"]
-    item_id = button_info["index"]
+    # Проверяем, что значение n_clicks действительно изменилось
+    triggered_prop = ctx.triggered[0]["prop_id"]
+    if not triggered_prop.endswith(".n_clicks"):
+        return dash.no_update
+
+    # Извлекаем id кнопки, которая была нажата
+    button_id = triggered_prop.split(".")[0]
+    
+    try:
+        button_info = json.loads(button_id)
+        button_type = button_info["type"]
+        item_id = button_info["index"]
+    except Exception as e:
+        print(f"Ошибка при разборе ID кнопки: {e}")
+        return dash.no_update
 
     if button_type == "like-btn":
-        print(f"Пользователь лайкнул товар {item_id}")
+        action = "like"
     elif button_type == "dislike-btn":
-        print(f"Пользователь дизлайкнул товар {item_id}")
+        action = "dislike"
+    else:
+        return dash.no_update
+
+    print(f"Feedback received - User: {user_id}, Item: {item_id}, Action: {action}")
+    
+    # Отправляем фидбек в RabbitMQ
+    send_feedback_to_rabbitmq(user_id, item_id, action)
 
     return dash.no_update
+
 
 if __name__ == "__main__":
     app.run(

@@ -37,36 +37,41 @@ def get_recommendations_from_graph_nn(
 
 
 async def get_recommendations(
-    user_id: str, redis_client: redis.Redis, model
+    user_id: str, 
+    redis_client: redis.Redis, 
+    model,
 ) -> Dict[str, List[Dict[str, float]]]:
     """
-    Возвращает список рекомендаций в формате {"recommendations": [{"item_id": str, "score": float}, ...]}
+    Возвращает рекомендации с учетом дизлайков и истории
     """
+    # Получаем дизлайки пользователя
+    dislikes = await redis_client.smembers(f"user_dislikes:{user_id}")
+    dislikes = set(dislikes) if dislikes else set()
+    
+    # Получаем историю пользователя
     user_data = await redis_client.get(f"user:{user_id}")
-    print("User data from Redis:", user_data)
-
+    
     if not user_data:
+        # Холодный пользователь
         return {"recommendations": []}
-
+    
     recommendations = get_recommendations_from_graph_nn(
         model=model,
         input_data=user_data,
-        count=10,
+        count=20,  # Берем больше, чтобы отфильтровать
         return_scores=True,
     )
-    print("Raw recommendations:", recommendations)
-
-    # Ensure we have a list of (item_id, score) tuples
-    if not recommendations:
-        recommendations = []
-    elif isinstance(recommendations[0], str):
-        recommendations = [(item, 0.0) for item in recommendations]
-
-    response = {
+    
+    # Фильтруем рекомендации
+    filtered_recommendations = []
+    for item_id, score in recommendations:
+        str_item_id = str(item_id)
+        if str_item_id not in dislikes:
+            filtered_recommendations.append((item_id, score))
+    
+    return {
         "recommendations": [
             {"item_id": str(item_id), "score": float(score)}
-            for item_id, score in recommendations
+            for item_id, score in filtered_recommendations[:10]  # Возвращаем топ-10
         ]
     }
-    print("Formatted response:", response)
-    return response

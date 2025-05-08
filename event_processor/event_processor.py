@@ -21,34 +21,47 @@ def main():
         )
     )
     channel = connection.channel()
-    channel.queue_declare(queue='user_events')
+    channel.queue_declare(queue='user_feedback', durable=True)
     
-    def callback(ch, method, properties, body):
+    def feedback_callback(ch, method, properties, body):
         try:
-            event = json.loads(body)
-            # Обработка события и сохранение в Redis
-            user_id = event.get('user_id')
-            event_type = event.get('type')
+            feedback = json.loads(body)
+            user_id = feedback.get('user_id')
+            item_id = feedback.get('item_id')
+            action = feedback.get('action')
             
-            # Пример: сохраняем последние 100 событий для каждого пользователя
-            redis_key = f"user_events:{user_id}"
-            redis_client.lpush(redis_key, json.dumps(event))
-            redis_client.ltrim(redis_key, 0, 99)
+            if not all([user_id, item_id, action]):
+                return
             
-            # Можно также обновлять счетчики и другие агрегаты
-            if event_type == 'item_view':
-                redis_client.zincrby('user:item_views', 1, user_id)
+            # Для дизлайков сохраняем отдельно
+            if action == 'dislike':
+                redis_key = f"user_dislikes:{user_id}"
+                redis_client.sadd(redis_key, item_id)
+                # Устанавливаем срок хранения дизлайков (например, 30 дней)
+                redis_client.expire(redis_key, 30 * 24 * 3600)
             
+            # Для лайков добавляем в историю как просмотр
+            elif action == 'like':
+                event = {
+                    'user_id': user_id,
+                    'item_id': item_id,
+                    'type': 'item_like',
+                    'timestamp': feedback.get('timestamp')
+                }
+                redis_key = f"user_events:{user_id}"
+                redis_client.lpush(redis_key, json.dumps(event))
+                redis_client.ltrim(redis_key, 0, 99)
+                
         except Exception as e:
-            print(f"Error processing event: {str(e)}")
+            print(f"Error processing feedback: {str(e)}")
     
     channel.basic_consume(
-        queue='user_events',
-        on_message_callback=callback,
-        auto_ack=True
+        queue='user_feedback',
+        on_message_callback=feedback_callback,
+        auto_ack=True,
     )
     
-    print(" [*] Waiting for messages. To exit press CTRL+C")
+    print(" [*] Waiting for feedback messages...")
     channel.start_consuming()
 
 
