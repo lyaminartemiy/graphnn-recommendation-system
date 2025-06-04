@@ -46,7 +46,7 @@ def main():
                     'user_id': user_id,
                     'item_id': item_id,
                     'type': 'item_like',
-                    'timestamp': feedback.get('timestamp')
+                    'timestamp': feedback.get('timestamp'),
                 }
                 redis_key = f"user_events:{user_id}"
                 redis_client.lpush(redis_key, json.dumps(event))

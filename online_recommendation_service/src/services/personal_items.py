@@ -36,6 +36,36 @@ def get_recommendations_from_graph_nn(
     return recommendations_result
 
 
+def get_lightgcn_recommendations(
+    model,
+    user_id: str,
+    count: int = 10,
+    return_scores: bool = True
+) -> List[tuple]:
+    """Получение рекомендаций от LightGCN модели"""
+    try:
+        # Получаем рекомендации из модели
+        recommendations = model.predict(
+            context={},
+            model_input={"user_ids": [user_id]},
+            params={
+                "top_k": count,
+                "return_scores": return_scores,
+            },
+        )
+        
+        # Форматируем результат
+        if return_scores and recommendations and isinstance(recommendations[0], (list, tuple)):
+            return [(item_id, float(score)) for item_id, score in recommendations]
+        elif recommendations:
+            return [(item_id, 0.0) for item_id in recommendations]
+        
+        return []
+    except Exception as e:
+        print(f"Ошибка при получении рекомендаций: {e}")
+        return []
+
+
 async def get_recommendations(
     user_id: str, 
     redis_client: redis.Redis, 
@@ -52,14 +82,22 @@ async def get_recommendations(
     user_data = await redis_client.get(f"user:{user_id}")
     
     if not user_data:
-        # Холодный пользователь
+        # Если истории нет - возвращаем популярные товары
+        popular_items = await redis_client.get("popular_recommendations")
+        if popular_items:
+            return {
+                "recommendations": [
+                    {"item_id": item_id, "score": 1.0}  # У популярных score=1
+                    for item_id in json.loads(popular_items)[:10]  # Берем топ-10
+                ]
+            }
         return {"recommendations": []}
     
-    recommendations = get_recommendations_from_graph_nn(
+    # Получаем рекомендации от модели
+    recommendations = get_lightgcn_recommendations(
         model=model,
-        input_data=user_data,
-        count=20,  # Берем больше, чтобы отфильтровать
-        return_scores=True,
+        user_id=user_id,
+        count=20  # Берем больше для последующей фильтрации
     )
     
     # Фильтруем рекомендации

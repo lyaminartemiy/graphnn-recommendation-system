@@ -385,7 +385,6 @@ app.layout = dbc.Container(
 )
 
 
-# Основной обработчик для загрузки данных
 @callback(
     [
         Output("history-images", "children"),
@@ -411,17 +410,34 @@ def load_user_data(n_clicks, user_id):
     try:
         # Получаем историю пользователя
         history = get_user_history(user_id)
+        
+        # Обработка случая, когда истории нет
         if not history:
+            # Получаем популярные рекомендации для новых пользователей
+            recommendations = get_recommendations(user_id, exclude_items=None)
+            
+            # Получаем изображения для рекомендаций
+            rec_images_data = get_product_images([rec["item_id"] for rec in recommendations])
+            recommendations_images = [
+                card for i, rec in enumerate(recommendations, 1)
+                if (card := create_image_card(
+                    rec_images_data.get(rec["item_id"]),
+                    rec["item_id"],
+                    i
+                ))
+            ]
+            
             return (
-                [dbc.Alert("История пользователя не найдена", color="warning")],
+                [dbc.Alert("У пользователя нет истории просмотров", color="info")],
+                recommendations_images,
                 [],
-                [],
-                [],
+                [{"item_id": rec["item_id"], "image": rec_images_data.get(rec["item_id"])} 
+                 for rec in recommendations],
                 [],
             )
 
         # Получаем изображения для истории
-        article_ids = history[-APP_CONFIG["history_limit"] :]
+        article_ids = history[:APP_CONFIG["history_limit"]]
         images_data = get_product_images(article_ids)
         history_urls = [images_data.get(str(art_id)) for art_id in article_ids]
         history_images = [

@@ -33,7 +33,6 @@ def graph_nn_pipeline():
         NUM_LAYERS = 5
         NUM_HEADS = 4
         SHUFFLE = False
-        TRAIN_SPLIT = 0.8
         TRANSACTIONS_TABLE = "recsys.transactions"
         DB_HOST = "postgres-data"
         DB_PORT = 5432
@@ -91,22 +90,20 @@ def graph_nn_pipeline():
             raw_data_path = DATA_DIR / "raw_transactions.pkl"
             _save_obj(transactions, raw_data_path)
             
+            # Создаем датасет на всех данных (без разделения)
             graph_dataset = TransactionDataset(transactions)
             
             # Сохраняем датасет на диск
             dataset_path = DATA_DIR / "graph_dataset.pkl"
             _save_obj(graph_dataset, dataset_path)
             
-            # Разделение данных
-            graph_train_size = int(Constants.TRAIN_SPLIT * len(graph_dataset))
-            train_indices = list(range(graph_train_size))
-            test_indices = list(range(graph_train_size, len(graph_dataset)))
+            # Используем все данные для обучения
+            train_indices = list(range(len(graph_dataset)))
             
             return {
                 "dataset_path": str(dataset_path),
                 "raw_data_path": str(raw_data_path),
                 "train_indices": train_indices,
-                "test_indices": test_indices,
                 "num_items": graph_dataset.num_items
             }
             
@@ -142,28 +139,13 @@ def graph_nn_pipeline():
 
     @task
     def create_data_loaders(data_dict):
-        """Создание DataLoader'ов"""
+        """Создание DataLoader'ов для всего датасета"""
         # Загружаем датасет с диска
         graph_dataset = _load_obj(data_dict["dataset_path"])
         
-        # Создаем подмножества
-        graph_train_dataset = torch.utils.data.Subset(
-            graph_dataset, 
-            data_dict["train_indices"]
-        )
-        graph_test_dataset = torch.utils.data.Subset(
-            graph_dataset,
-            data_dict["test_indices"]
-        )
-        
-        # Создаем загрузчики
+        # Создаем загрузчик для всего датасета
         train_loader = DataLoader(
-            graph_train_dataset, 
-            batch_size=Constants.BATCH_SIZE, 
-            shuffle=Constants.SHUFFLE
-        )
-        test_loader = DataLoader(
-            graph_test_dataset, 
+            graph_dataset, 
             batch_size=Constants.BATCH_SIZE, 
             shuffle=Constants.SHUFFLE
         )
@@ -172,7 +154,6 @@ def graph_nn_pipeline():
         loaders_path = DATA_DIR / "data_loaders.pkl"
         _save_obj({
             "train_loader": train_loader,
-            "test_loader": test_loader,
             "num_items": data_dict["num_items"],
             "dataset_path": data_dict["dataset_path"]
         }, loaders_path)
@@ -183,9 +164,9 @@ def graph_nn_pipeline():
 
     @task
     def train_model(data_dict):
-        """Обучение модели"""
+        """Обучение модели на всем датасете"""
         from src.modules.graph_nn.model import TransactionGNN
-        from src.modules.graph_nn.train import train_epoch, evaluate_epoch
+        from src.modules.graph_nn.train import train_epoch
         
         # Загружаем данные
         loaders_data = _load_obj(data_dict["loaders_path"])
@@ -199,7 +180,7 @@ def graph_nn_pipeline():
         ).to(Constants.DEVICE)
         graph_optimizer = torch.optim.Adam(graph_model.parameters(), lr=0.001)
 
-        # Обучение и оценка
+        # Обучение только на train (без валидации)
         for epoch in range(5):
             train_loss = train_epoch(
                 model=graph_model,
@@ -207,14 +188,7 @@ def graph_nn_pipeline():
                 optimizer=graph_optimizer,
                 device=Constants.DEVICE,
             )
-            test_acc, test_loss = evaluate_epoch(
-                model=graph_model,
-                loader=loaders_data["test_loader"],
-                device=Constants.DEVICE,
-            )
-            print(
-                f"Epoch: {epoch:03d}, Train Loss: {train_loss:.4f}, Test Acc: {test_acc:.4f}, Test Loss: {test_loss:.4f}"
-            )
+            print(f"Epoch: {epoch:03d}, Train Loss: {train_loss:.4f}")
         
         # Сохраняем модель и датасет
         model_path = DATA_DIR / "trained_model.pkl"
@@ -260,8 +234,8 @@ def graph_nn_pipeline():
             "hidden_dim": Constants.HIDDEN_DIM,
             "num_layers": Constants.NUM_LAYERS,
             "num_heads": Constants.NUM_HEADS,
-            "dropout": getattr(Constants, "DROPOUT", 0.1),
-            "max_seq_length": getattr(Constants, "MAX_SEQ_LENGTH", 50)
+            "dropout": 0.1,
+            "max_seq_length": 50
         }, model_state_path)
 
         with mlflow.start_run(run_name=f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
@@ -271,8 +245,8 @@ def graph_nn_pipeline():
                 "hidden_dim": Constants.HIDDEN_DIM,
                 "num_layers": Constants.NUM_LAYERS,
                 "num_heads": Constants.NUM_HEADS,
-                "dropout": getattr(Constants, "DROPOUT", 0.1),
-                "max_seq_length": getattr(Constants, "MAX_SEQ_LENGTH", 50)
+                "dropout": 0.1,
+                "max_seq_length": 50
             })
 
             # Логируем артефакты
@@ -286,12 +260,12 @@ def graph_nn_pipeline():
             }
 
             # Логируем pyfunc модель
-            model_info = mlflow.pyfunc.log_model(
+            mlflow.pyfunc.log_model(
                 artifact_path="gnn_recommender",
                 python_model=GNNRecommenderWrapper(),
                 artifacts=artifacts,
                 registered_model_name="gnn_recommender",
-                code_path=["/opt/airflow/src/mlflow_models"],
+                code_path=["/opt/airflow/src/mlflow_models/graph_nn"],
                 pip_requirements=[
                     "PyYAML==6.0.2",
                     "torch==2.3.0",
@@ -313,8 +287,6 @@ def graph_nn_pipeline():
         for file in artifacts_dir.glob("*"):
             file.unlink()
         artifacts_dir.rmdir()
-        
-        return f"Model saved to MLflow with run_id: {model_info.run_id}"
     
     # Определяем порядок выполнения задач
     data = prepare_data()

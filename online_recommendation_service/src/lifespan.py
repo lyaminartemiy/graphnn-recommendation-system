@@ -51,9 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
         mlflow.set_tracking_uri(app.state.service_config.infrastructure.mlflow_uri)
         
         client = MlflowClient()
-        latest_version = client.get_latest_versions("gnn_recommender")[0]
+        latest_version = client.get_latest_versions("lightgcn_recommender")[0]
         print("latest_version:", latest_version)
-        model_uri = f"models:/gnn_recommender/{latest_version.version}"
+        model_uri = f"models:/lightgcn_recommender/{latest_version.version}"
         
         # Загружаем модель
         pyfunc_model = mlflow.pyfunc.load_model(model_uri)
